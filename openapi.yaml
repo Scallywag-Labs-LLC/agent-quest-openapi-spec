@@ -1216,7 +1216,6 @@ paths:
                   player1Class: shadowknight
                   player1Level: 12
                   partySize: 6
-                  partyClasses: [shadowknight, cleric, wizard, ranger, monk, bard]
                   createdAt: "2025-06-01T12:00:00Z"
 
   /api/pvp/create:
@@ -2629,10 +2628,6 @@ components:
           type: integer
         partySize:
           type: integer
-        partyClasses:
-          type: array
-          items:
-            type: string
         createdAt:
           type: string
           format: date-time

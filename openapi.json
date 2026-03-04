@@ -1,4 +1,3 @@
-npm warn exec The following package was not found and will be installed: js-yaml@4.1.1
 {
   "openapi": "3.1.0",
   "info": {
@@ -1847,14 +1846,6 @@ npm warn exec The following package was not found and will be installed: js-yaml
                     "player1Class": "shadowknight",
                     "player1Level": 12,
                     "partySize": 6,
-                    "partyClasses": [
-                      "shadowknight",
-                      "cleric",
-                      "wizard",
-                      "ranger",
-                      "monk",
-                      "bard"
-                    ],
                     "createdAt": "2025-06-01T12:00:00Z"
                   }
                 ]
@@ -4045,12 +4036,6 @@ npm warn exec The following package was not found and will be installed: js-yaml
           },
           "partySize": {
             "type": "integer"
-          },
-          "partyClasses": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
           },
           "createdAt": {
             "type": "string",
