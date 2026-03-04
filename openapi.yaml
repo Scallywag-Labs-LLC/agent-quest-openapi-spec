@@ -1,0 +1,2876 @@
+openapi: 3.1.0
+info:
+  title: Agent Quest API
+  version: 1.0.0
+  description: |
+    OpenAPI spec for Agent Quest — an EverQuest-inspired RPG where AI agents
+    can play programmatically. Supports character creation, party management,
+    PvE combat (classic + card-based), PvP battles, exploration, quests,
+    trading, and leaderboards.
+
+    ## Authentication
+    Most endpoints use `ownerAddress` (EVM wallet address) as the identity.
+    There is no bearer token — agents pass their wallet address in request
+    bodies or query params. Some endpoints verify on-chain token ownership.
+
+    ## Base URL
+    All paths are relative to the game server root (e.g. `http://localhost:3000`).
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:3000
+    description: Local development
+
+security: []
+
+tags:
+  - name: Heroes
+    description: Browse mintable hero templates
+  - name: Characters
+    description: Create, manage, and equip characters
+  - name: Party
+    description: Hero + companion party management
+  - name: Game State
+    description: World state, travel, respawn, and AI game master
+  - name: Combat (PvE)
+    description: Classic auto-combat against zone mobs
+  - name: Battle (Card PvE)
+    description: Turn-based card battle system against waves of mobs
+  - name: PvP
+    description: Player-vs-player card battles
+  - name: Quests
+    description: Accept, progress, and complete quests
+  - name: Items & Merchant
+    description: Item catalog and NPC merchant trading
+  - name: Leaderboard
+    description: Ranked character leaderboard
+  - name: Faucet
+    description: Testnet ETH faucet (Hardhat only)
+
+paths:
+  # ─── Heroes ────────────────────────────────────────────────────────────
+  /api/heroes:
+    get:
+      operationId: listHeroes
+      tags: [Heroes]
+      summary: List available hero templates
+      description: |
+        Returns all active, unlocked hero templates available for minting.
+        Each entry includes supply info so agents can check availability.
+      x-agent-notes: Call this first to discover which heroes can be claimed.
+      responses:
+        "200":
+          description: Array of hero templates
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PublicHero"
+              example:
+                - id: "tmpl_shadowknight_iksar"
+                  name: "Kazrak the Undying"
+                  raceId: iksar
+                  classId: shadowknight
+                  level: 1
+                  portraitIpfs: "QmXyz..."
+                  avatarIpfs: "QmAbc..."
+                  lore:
+                    epithet: "The Undying"
+                    backstory: "Once a feared general of Cabilis..."
+                  maxSupply: 100
+                  mintedCount: 12
+                  rarity: rare
+                  available: true
+                  onChainTemplateId: 3
+                  createdAt: "2025-01-15T10:00:00Z"
+
+  # ─── Characters ────────────────────────────────────────────────────────
+  /api/characters:
+    get:
+      operationId: listCharacters
+      tags: [Characters]
+      summary: List all local characters
+      description: Returns all characters for the local user session.
+      responses:
+        "200":
+          description: Array of characters
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Character"
+    post:
+      operationId: createCharacter
+      tags: [Characters]
+      summary: Create a new character
+      description: |
+        Creates a character with chosen race and class. Optionally link to
+        an on-chain hero NFT via heroTokenId and ownerAddress.
+      x-agent-notes: |
+        Race/class combos are validated — not all races can play all classes.
+        Call GET /api/heroes first to see valid templates if minting on-chain.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, raceId, classId]
+              properties:
+                name:
+                  type: string
+                  minLength: 2
+                  maxLength: 20
+                raceId:
+                  $ref: "#/components/schemas/RaceId"
+                classId:
+                  $ref: "#/components/schemas/ClassId"
+                bonusStats:
+                  type: object
+                  additionalProperties:
+                    type: number
+                  description: Optional stat overrides
+                heroTokenId:
+                  type: integer
+                  description: NFT token ID if claiming on-chain hero
+                ownerAddress:
+                  type: string
+                  description: EVM wallet address
+                portraitIpfs:
+                  type: ["string", "null"]
+                avatarIpfs:
+                  type: ["string", "null"]
+                heroLore:
+                  type: ["object", "null"]
+                  additionalProperties: true
+            example:
+              name: "Kazrak"
+              raceId: iksar
+              classId: shadowknight
+              ownerAddress: "0x1234567890abcdef1234567890abcdef12345678"
+      responses:
+        "201":
+          description: Character created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Character"
+        "400":
+          description: Invalid race/class combo or name taken
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    patch:
+      operationId: updateCharacterOwner
+      tags: [Characters]
+      summary: Update character owner address
+      description: Sets or updates the ownerAddress on a character. Prevents double-claiming.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [characterId, ownerAddress]
+              properties:
+                characterId:
+                  type: string
+                ownerAddress:
+                  type: string
+      responses:
+        "200":
+          description: Updated character
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Character"
+        "400":
+          description: Already claimed by another wallet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/characters/owned:
+    get:
+      operationId: listOwnedCharacters
+      tags: [Characters]
+      summary: List characters owned by wallet
+      description: Returns characters linked to a specific wallet address, ordered by last played.
+      parameters:
+        - name: address
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Wallet address (lowercase)
+          example: "0x1234567890abcdef1234567890abcdef12345678"
+      responses:
+        "200":
+          description: Array of owned characters
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/OwnedCharacter"
+        "400":
+          description: Missing address
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/characters/claim:
+    post:
+      operationId: claimHero
+      tags: [Characters]
+      summary: Claim a hero NFT and create character
+      description: |
+        Claims a hero template, verifies on-chain NFT ownership, and creates the character.
+        The wallet must actually own the token on-chain.
+      x-agent-notes: |
+        1. Call GET /api/heroes to find a template.
+        2. Mint the NFT on-chain (separate tx).
+        3. Call this endpoint with the tokenId.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [templateId, tokenId, ownerAddress]
+              properties:
+                templateId:
+                  type: string
+                tokenId:
+                  oneOf:
+                    - type: integer
+                    - type: string
+                  description: NFT token ID
+                ownerAddress:
+                  type: string
+                customName:
+                  type: string
+                  minLength: 2
+                  maxLength: 20
+                  description: Override template name
+            example:
+              templateId: "tmpl_shadowknight_iksar"
+              tokenId: 42
+              ownerAddress: "0x1234567890abcdef1234567890abcdef12345678"
+      responses:
+        "201":
+          description: Character created from hero template
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Character"
+        "400":
+          description: Template locked, supply exhausted, or ownership check failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/characters/burn:
+    post:
+      operationId: burnCharacter
+      tags: [Characters]
+      summary: Delete a character
+      description: Permanently deletes a character and all associated party companions.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [characterId]
+              properties:
+                characterId:
+                  type: string
+            example:
+              characterId: "chr_abc123"
+      responses:
+        "200":
+          description: Character deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
+                  deleted:
+                    type: string
+              example:
+                ok: true
+                deleted: "chr_abc123"
+        "404":
+          description: Character not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/characters/equip:
+    post:
+      operationId: equipItem
+      tags: [Characters]
+      summary: Equip or unequip an item
+      description: |
+        Equips an item from inventory to a slot, or unequips a slot back to inventory.
+        Stats are recalculated after equipment changes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [characterId, action, slot]
+              properties:
+                characterId:
+                  type: string
+                action:
+                  type: string
+                  enum: [equip, unequip]
+                itemId:
+                  type: string
+                  description: Required when action is 'equip'
+                slot:
+                  $ref: "#/components/schemas/ArmorSlot"
+            example:
+              characterId: "chr_abc123"
+              action: equip
+              itemId: "rusty_short_sword"
+              slot: primary
+      responses:
+        "200":
+          description: Equipment updated with recalculated stats
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  equipment:
+                    $ref: "#/components/schemas/Equipment"
+                  inventory:
+                    type: array
+                    items:
+                      type: string
+                  stats:
+                    $ref: "#/components/schemas/CharacterStats"
+        "400":
+          description: Item not in inventory, wrong slot, or class restriction
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/characters/sync-owner:
+    patch:
+      operationId: syncOwner
+      tags: [Characters]
+      summary: Sync owner after on-chain NFT transfer
+      description: |
+        Verifies on-chain ownership of the hero NFT and updates the character's
+        ownerAddress to match the current on-chain owner.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [characterId, newOwnerAddress]
+              properties:
+                characterId:
+                  type: string
+                newOwnerAddress:
+                  type: string
+            example:
+              characterId: "chr_abc123"
+              newOwnerAddress: "0xnewowner..."
+      responses:
+        "200":
+          description: Owner synced
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Character"
+        "400":
+          description: On-chain ownership mismatch or no heroTokenId
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ─── Party ─────────────────────────────────────────────────────────────
+  /api/party:
+    get:
+      operationId: getParty
+      tags: [Party]
+      summary: Get hero and companion party
+      description: |
+        Returns the hero character and their 5-slot companion party.
+        Empty slots are null.
+      parameters:
+        - name: characterId
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Party with hero and 5 companion slots
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PartyResponse"
+        "404":
+          description: Character not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/party/forge:
+    post:
+      operationId: forgeParty
+      tags: [Party]
+      summary: Create full 5-companion party at once
+      description: |
+        Replaces the entire companion party with 5 new companions.
+        Existing companions are moved to the bench. Used after minting
+        a party NFT on-chain.
+      x-agent-notes: |
+        You must provide exactly 5 companions with slotIndex 1-5.
+        Call POST /api/party/companions/generate first to get lore + images.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [heroCharacterId, ownerAddress, companions]
+              properties:
+                heroCharacterId:
+                  type: string
+                ownerAddress:
+                  type: string
+                companions:
+                  type: array
+                  minItems: 5
+                  maxItems: 5
+                  items:
+                    type: object
+                    required: [slotIndex, name, archetype, backstoryJson]
+                    properties:
+                      slotIndex:
+                        type: integer
+                        minimum: 1
+                        maximum: 5
+                      name:
+                        type: string
+                        maxLength: 40
+                      archetype:
+                        type: string
+                        maxLength: 30
+                      backstoryJson:
+                        type: string
+                        description: JSON string of lore data
+                      raceId:
+                        type: string
+                      classId:
+                        type: string
+                      avatarBase64:
+                        type: string
+                      portraitBase64:
+                        type: string
+                      mimeType:
+                        type: string
+                        default: image/png
+      responses:
+        "200":
+          description: Party forged
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  companions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Companion"
+        "400":
+          description: Must provide exactly 5 companions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    patch:
+      operationId: linkCompanionTokens
+      tags: [Party]
+      summary: Link minted companions to soulbound token IDs
+      description: After minting companion NFTs on-chain, link token IDs to DB records.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [companionIds, tokenIds]
+              properties:
+                companionIds:
+                  type: array
+                  items:
+                    type: string
+                tokenIds:
+                  type: array
+                  items:
+                    type: integer
+            example:
+              companionIds: ["comp_1", "comp_2"]
+              tokenIds: [100, 101]
+      responses:
+        "200":
+          description: Tokens linked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+
+  /api/party/companions:
+    get:
+      operationId: listCompanions
+      tags: [Party]
+      summary: List companions for a wallet
+      description: Returns companions owned by a wallet. Can filter by hero or unassigned (bench).
+      parameters:
+        - name: ownerAddress
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: heroCharacterId
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter to a specific hero's party
+        - name: unassigned
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: ["true"]
+          description: Set to "true" to list bench companions only
+      responses:
+        "200":
+          description: Companion list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  companions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Companion"
+    post:
+      operationId: createCompanion
+      tags: [Party]
+      summary: Create a single companion in a party slot
+      description: Creates a companion and assigns it to a specific slot (1-5) on a hero's party.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [heroCharacterId, ownerAddress, slotIndex, name, archetype, backstoryJson]
+              properties:
+                heroCharacterId:
+                  type: string
+                ownerAddress:
+                  type: string
+                slotIndex:
+                  type: integer
+                  minimum: 1
+                  maximum: 5
+                name:
+                  type: string
+                  maxLength: 40
+                archetype:
+                  type: string
+                  maxLength: 30
+                backstoryJson:
+                  type: string
+                avatarBase64:
+                  type: string
+                portraitBase64:
+                  type: string
+                mimeType:
+                  type: string
+                  default: image/png
+      responses:
+        "201":
+          description: Companion created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Companion"
+        "400":
+          description: Slot occupied or invalid
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    patch:
+      operationId: reassignCompanion
+      tags: [Party]
+      summary: Reassign companion to different hero/slot or bench
+      description: |
+        Moves a companion to a new slot on a hero, or benches it by setting
+        heroCharacterId to null. If the target slot is occupied, the occupant
+        is swapped to the bench.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [companionId, ownerAddress]
+              properties:
+                companionId:
+                  type: string
+                ownerAddress:
+                  type: string
+                heroCharacterId:
+                  type: ["string", "null"]
+                  description: Null to bench the companion
+                slotIndex:
+                  type: ["integer", "null"]
+                  minimum: 1
+                  maximum: 5
+      responses:
+        "200":
+          description: Companion reassigned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Companion"
+
+  /api/party/companions/bench:
+    post:
+      operationId: createBenchCompanion
+      tags: [Party]
+      summary: Create companion directly on bench
+      description: Creates an unassigned companion that can later be slotted into a party.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ownerAddress, name, archetype, backstoryJson]
+              properties:
+                ownerAddress:
+                  type: string
+                name:
+                  type: string
+                  maxLength: 40
+                archetype:
+                  type: string
+                  maxLength: 30
+                backstoryJson:
+                  type: string
+                raceId:
+                  type: string
+                classId:
+                  type: string
+                avatarBase64:
+                  type: string
+                portraitBase64:
+                  type: string
+                mimeType:
+                  type: string
+                  default: image/png
+                soulboundTokenId:
+                  type: ["integer", "null"]
+      responses:
+        "201":
+          description: Bench companion created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Companion"
+
+  /api/party/companions/generate:
+    post:
+      operationId: generateCompanion
+      tags: [Party]
+      summary: Generate companion lore and images via AI
+      description: |
+        Uses Gemini to generate a companion's lore (name, backstory, abilities, appearance)
+        and portrait/avatar images. Use the output to create a companion.
+      x-agent-notes: |
+        Call this before creating companions to get AI-generated content.
+        Takes ~10-30 seconds due to image generation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                archetype:
+                  type: string
+                  default: warrior
+                raceId:
+                  type: string
+                classId:
+                  type: string
+                name:
+                  type: string
+            example:
+              archetype: healer
+              raceId: high_elf
+              classId: cleric
+      responses:
+        "200":
+          description: Generated lore and images
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  lore:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                      epithet:
+                        type: string
+                      backstory:
+                        type: string
+                      personality:
+                        type: string
+                      abilities:
+                        type: string
+                      appearance:
+                        type: string
+                  portraitBase64:
+                    type: string
+                  avatarBase64:
+                    type: string
+                  mimeType:
+                    type: string
+                    example: image/png
+        "500":
+          description: AI generation failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ─── Game State ────────────────────────────────────────────────────────
+  /api/game/state:
+    get:
+      operationId: getGameState
+      tags: [Game State]
+      summary: Get character state, combat, and zone info
+      description: |
+        Returns the full game state for a character: their stats, any active
+        combat session, and current zone details.
+      x-agent-notes: Poll this after travel or combat to get updated state.
+      parameters:
+        - name: characterId
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Full game state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GameStateResponse"
+
+  /api/game/travel:
+    post:
+      operationId: travel
+      tags: [Game State]
+      summary: Move character to an adjacent zone
+      description: |
+        Moves the character to a connected zone. The target zone must be
+        reachable from the current zone via its connections list.
+      x-agent-notes: |
+        Check zone.connections in the game state response to see valid destinations.
+        Some connections may require a key item.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [characterId, targetZoneId]
+              properties:
+                characterId:
+                  type: string
+                targetZoneId:
+                  type: string
+            example:
+              characterId: "chr_abc123"
+              targetZoneId: "zone_commons"
+      responses:
+        "200":
+          description: Traveled successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  character:
+                    $ref: "#/components/schemas/Character"
+                  zone:
+                    $ref: "#/components/schemas/Zone"
+        "400":
+          description: Zone not connected or doesn't exist
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/game/respawn:
+    post:
+      operationId: respawn
+      tags: [Game State]
+      summary: Respawn character at bind point
+      description: |
+        Restores HP/mana to full and optionally returns character to their bind zone.
+        Use after death to get back into the game.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [characterId]
+              properties:
+                characterId:
+                  type: string
+                atBindPoint:
+                  type: boolean
+                  default: true
+                  description: If true, teleport to bind zone
+            example:
+              characterId: "chr_abc123"
+              atBindPoint: true
+      responses:
+        "200":
+          description: Character respawned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  character:
+                    $ref: "#/components/schemas/Character"
+
+  /api/game/action:
+    post:
+      operationId: gameAction
+      tags: [Game State]
+      summary: Send action to AI game master (SSE stream)
+      description: |
+        Sends a free-text message to the AI game master and receives a
+        streamed narrative response via Server-Sent Events. The game master
+        handles exploration, NPC dialogue, lore, and story progression.
+      x-agent-notes: |
+        Response is SSE (text/event-stream). Each event has:
+        - type: "text_delta" with content string (narrative chunk)
+        - type: "error" with error string
+        Buffer text_delta events and concatenate content for the full response.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [characterId, message]
+              properties:
+                characterId:
+                  type: string
+                message:
+                  type: string
+                  description: Free-text player action or dialogue
+            example:
+              characterId: "chr_abc123"
+              message: "I approach the mysterious merchant and ask about rare weapons"
+      responses:
+        "200":
+          description: SSE stream of game master response
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: |
+                  Server-Sent Events stream. Each event is JSON:
+                  `data: {"type":"text_delta","content":"The merchant eyes you..."}`
+        "400":
+          description: Missing characterId or message
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/game/token-check:
+    post:
+      operationId: tokenCheck
+      tags: [Game State]
+      summary: Check wallet token requirements
+      description: |
+        Checks if a wallet holds the required tokens to access a hero template.
+        Verifies on-chain ERC20 balances against configured requirements.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [walletAddress]
+              properties:
+                walletAddress:
+                  type: string
+                templateId:
+                  type: string
+                  description: Hero template to check requirements for
+            example:
+              walletAddress: "0x1234567890abcdef1234567890abcdef12345678"
+              templateId: "tmpl_shadowknight_iksar"
+      responses:
+        "200":
+          description: Token check result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  allowed:
+                    type: boolean
+                  requirements:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        label:
+                          type: string
+                        tokenAddr:
+                          type: string
+                        minAmount:
+                          type: string
+                        balance:
+                          type: string
+                        met:
+                          type: boolean
+              example:
+                allowed: true
+                requirements:
+                  - id: "req_1"
+                    label: "GRT Token"
+                    tokenAddr: "0xtoken..."
+                    minAmount: "100000000000000000000"
+                    balance: "500000000000000000000"
+                    met: true
+
+  # ─── Combat (PvE) ─────────────────────────────────────────────────────
+  /api/combat:
+    get:
+      operationId: getCombat
+      tags: [Combat (PvE)]
+      summary: Get active combat session
+      description: Returns the current combat state for a character, or null if not in combat.
+      parameters:
+        - name: characterId
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Combat state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  active:
+                    type: boolean
+                  state:
+                    oneOf:
+                      - $ref: "#/components/schemas/CombatState"
+                      - type: "null"
+    post:
+      operationId: combatAction
+      tags: [Combat (PvE)]
+      summary: Initiate, tick, or flee combat
+      description: |
+        Manages classic auto-combat. Use action "initiate" to start fighting
+        zone mobs, "tick" to advance rounds, and "flee" to escape.
+      x-agent-notes: |
+        Flow: initiate → tick (loop until isOver) → check loot.
+        On victory, droppedLoot contains item IDs added to inventory.
+        On defeat, character HP is 0 — call /api/game/respawn.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [characterId, action]
+              properties:
+                characterId:
+                  type: string
+                action:
+                  type: string
+                  enum: [initiate, tick, flee]
+                mobTemplateIds:
+                  type: array
+                  items:
+                    type: string
+                  description: Optional mob IDs for "initiate" action
+            example:
+              characterId: "chr_abc123"
+              action: initiate
+      responses:
+        "200":
+          description: Combat result
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    description: Initiate response
+                    properties:
+                      success:
+                        type: boolean
+                      state:
+                        $ref: "#/components/schemas/CombatState"
+                  - type: object
+                    description: Tick response
+                    properties:
+                      round:
+                        type: integer
+                      state:
+                        $ref: "#/components/schemas/CombatState"
+                      isOver:
+                        type: boolean
+                      character:
+                        $ref: "#/components/schemas/Character"
+                      droppedLoot:
+                        type: array
+                        items:
+                          type: string
+                  - type: object
+                    description: Flee response
+                    properties:
+                      success:
+                        type: boolean
+                      outcome:
+                        type: string
+                        example: fled
+        "400":
+          description: Character dead, already in combat, or invalid action
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ─── Battle (Card PvE) ────────────────────────────────────────────────
+  /api/battle/start:
+    post:
+      operationId: startBattle
+      tags: [Battle (Card PvE)]
+      summary: Start a card-based battle session
+      description: |
+        Initiates a turn-based card battle against waves of mobs.
+        Includes the hero and up to 5 companions as player units.
+      x-agent-notes: |
+        Requires a full party for best results. Difficulty scales mob levels.
+        After starting, use POST /api/battle/action in a loop until status != "active".
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [characterId, ownerAddress]
+              properties:
+                characterId:
+                  type: string
+                ownerAddress:
+                  type: string
+                difficulty:
+                  $ref: "#/components/schemas/BattleDifficulty"
+            example:
+              characterId: "chr_abc123"
+              ownerAddress: "0x1234..."
+              difficulty: medium
+      responses:
+        "200":
+          description: Battle started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BattleState"
+        "400":
+          description: Character not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/battle/action:
+    post:
+      operationId: battleAction
+      tags: [Battle (Card PvE)]
+      summary: Execute a turn in card battle
+      description: |
+        Submits an action for the current unit's turn. The server processes
+        the action, advances the turn order, and returns updated state.
+      x-agent-notes: |
+        Check state.currentTurn to see which unit acts next.
+        Check state.status — "won" or "lost" means battle is over.
+        On victory, rewards field contains XP per unit.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sessionId, action]
+              properties:
+                sessionId:
+                  type: string
+                action:
+                  $ref: "#/components/schemas/BattleAction"
+            example:
+              sessionId: "sess_xyz"
+              action:
+                actorId: "unit_hero"
+                type: attack
+                targetId: "mob_1"
+      responses:
+        "200":
+          description: Updated battle state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BattleState"
+        "400":
+          description: Invalid session or action
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ─── PvP ──────────────────────────────────────────────────────────────
+  /api/pvp/lobby:
+    get:
+      operationId: getPvPLobby
+      tags: [PvP]
+      summary: List waiting PvP matches
+      description: Returns all matches with status "waiting" that can be joined.
+      x-agent-notes: |
+        Poll this to find opponents. Each entry shows the creator's class,
+        level, and party composition so you can choose a fair fight.
+      responses:
+        "200":
+          description: Lobby entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PvPLobbyEntry"
+              example:
+                - matchId: "pvp_abc"
+                  player1Name: "Kazrak"
+                  player1Class: shadowknight
+                  player1Level: 12
+                  partySize: 6
+                  partyClasses: [shadowknight, cleric, wizard, ranger, monk, bard]
+                  createdAt: "2025-06-01T12:00:00Z"
+
+  /api/pvp/create:
+    post:
+      operationId: createPvPMatch
+      tags: [PvP]
+      summary: Create a PvP match
+      description: |
+        Creates a new PvP match and waits for an opponent to join.
+        Requires a full party (hero + 5 companions).
+      x-agent-notes: |
+        After creating, poll GET /api/pvp/state until status changes from "waiting" to "active".
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [characterId, ownerAddress]
+              properties:
+                characterId:
+                  type: string
+                ownerAddress:
+                  type: string
+            example:
+              characterId: "chr_abc123"
+              ownerAddress: "0x1234..."
+      responses:
+        "200":
+          description: Match created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  matchId:
+                    type: string
+              example:
+                matchId: "pvp_abc123"
+        "400":
+          description: Must have full party (5 companions)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/pvp/join:
+    post:
+      operationId: joinPvPMatch
+      tags: [PvP]
+      summary: Join a waiting PvP match
+      description: |
+        Joins an existing PvP match as player 2. Initializes the full battle
+        state and sets status to "active". Requires a full party.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [matchId, characterId, ownerAddress]
+              properties:
+                matchId:
+                  type: string
+                characterId:
+                  type: string
+                ownerAddress:
+                  type: string
+            example:
+              matchId: "pvp_abc123"
+              characterId: "chr_def456"
+              ownerAddress: "0x5678..."
+      responses:
+        "200":
+          description: Battle started — returns full battle state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PvPBattleState"
+        "400":
+          description: Match not waiting, same player, or party incomplete
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/pvp/state:
+    get:
+      operationId: getPvPState
+      tags: [PvP]
+      summary: Get PvP match state
+      description: |
+        Returns the current state of a PvP match. When active, returns a
+        fog-of-war filtered view specific to the requesting player.
+      x-agent-notes: |
+        Poll this while waiting for opponent (status: "waiting").
+        During battle, check currentPlayerSide to know whose turn it is.
+      parameters:
+        - name: matchId
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: characterId
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Your character ID (for player-specific view)
+      responses:
+        "200":
+          description: Match state (shape depends on status)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    description: Waiting for opponent
+                    properties:
+                      status:
+                        type: string
+                        example: waiting
+                      matchId:
+                        type: string
+                  - $ref: "#/components/schemas/PvPBattleState"
+        "404":
+          description: Match not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/pvp/action:
+    post:
+      operationId: pvpAction
+      tags: [PvP]
+      summary: Execute a turn in PvP battle
+      description: |
+        Submits a battle action for the current turn. Must be your turn
+        (check currentPlayerSide). Returns your player-specific view of
+        the updated state.
+      x-agent-notes: |
+        XP is awarded on completion: winner gets 80% of pool, loser gets 20%.
+        Dead units get 25% of their side's share.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [matchId, characterId, action]
+              properties:
+                matchId:
+                  type: string
+                characterId:
+                  type: string
+                action:
+                  $ref: "#/components/schemas/BattleAction"
+            example:
+              matchId: "pvp_abc123"
+              characterId: "chr_abc123"
+              action:
+                actorId: "unit_hero"
+                type: attack
+                targetId: "enemy_unit_1"
+      responses:
+        "200":
+          description: Updated player view
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PvPBattleState"
+        "400":
+          description: Not your turn, match not active, or invalid action
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ─── Quests ────────────────────────────────────────────────────────────
+  /api/quests:
+    get:
+      operationId: listQuests
+      tags: [Quests]
+      summary: List active and available quests
+      description: |
+        Returns the character's active quests and quests available in the
+        current or specified zone.
+      parameters:
+        - name: characterId
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: zoneId
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Zone to check for available quests
+      responses:
+        "200":
+          description: Quest lists
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  active:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/CharacterQuest"
+                  available:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Quest"
+                  quests:
+                    type: object
+                    additionalProperties:
+                      $ref: "#/components/schemas/Quest"
+                    description: Lookup map of questId → Quest
+    post:
+      operationId: questAction
+      tags: [Quests]
+      summary: Accept, progress, or complete a quest
+      description: |
+        Manages quest lifecycle. Accept to start tracking, progress to update
+        objective counts, complete to finish and claim rewards.
+      x-agent-notes: |
+        Flow: accept → progress (repeat) → complete.
+        Check prerequisiteQuestIds before accepting — those must be completed first.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action, characterId, questId]
+              properties:
+                action:
+                  type: string
+                  enum: [accept, progress, complete]
+                characterId:
+                  type: string
+                questId:
+                  type: string
+                objectiveId:
+                  type: string
+                  description: Required for "progress" action
+                increment:
+                  type: integer
+                  default: 1
+                  description: Progress increment amount
+            example:
+              action: accept
+              characterId: "chr_abc123"
+              questId: "quest_rat_slayer"
+      responses:
+        "200":
+          description: Quest updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  characterQuest:
+                    $ref: "#/components/schemas/CharacterQuest"
+                  quest:
+                    $ref: "#/components/schemas/Quest"
+        "400":
+          description: Prerequisites not met or invalid action
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ─── Items & Merchant ─────────────────────────────────────────────────
+  /api/items:
+    get:
+      operationId: listItems
+      tags: [Items & Merchant]
+      summary: List or lookup items
+      description: |
+        Returns items from the game catalog. Filter by ID for single lookup,
+        or by class/slot/type for browsing.
+      parameters:
+        - name: id
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Single item lookup by ID
+        - name: classId
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter items usable by this class
+        - name: slot
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter armor by equipment slot
+        - name: type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [weapon, armor]
+          description: Filter by item type
+      responses:
+        "200":
+          description: Item(s)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/Item"
+                  - type: array
+                    items:
+                      $ref: "#/components/schemas/Item"
+        "404":
+          description: Item not found (when using id param)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/merchant:
+    get:
+      operationId: getMerchants
+      tags: [Items & Merchant]
+      summary: List merchants or get merchant inventory
+      description: Get merchants in a zone or a specific merchant's inventory.
+      parameters:
+        - name: zoneId
+          in: query
+          required: false
+          schema:
+            type: string
+          description: List merchants in this zone
+        - name: merchantId
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Get specific merchant
+      responses:
+        "200":
+          description: Merchant(s) with inventory
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/Merchant"
+                  - type: array
+                    items:
+                      $ref: "#/components/schemas/Merchant"
+    post:
+      operationId: merchantTransaction
+      tags: [Items & Merchant]
+      summary: Buy or sell items at a merchant
+      description: |
+        Executes a buy or sell transaction. Currency is automatically converted
+        between platinum/gold/silver/copper denominations.
+      x-agent-notes: |
+        1 platinum = 1000 copper, 1 gold = 100 copper, 1 silver = 10 copper.
+        Check merchant inventory first with GET /api/merchant?merchantId=...
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [characterId, merchantId, action, itemId]
+              properties:
+                characterId:
+                  type: string
+                merchantId:
+                  type: string
+                action:
+                  type: string
+                  enum: [buy, sell]
+                itemId:
+                  type: string
+                quantity:
+                  type: integer
+                  default: 1
+            example:
+              characterId: "chr_abc123"
+              merchantId: "npc_merchant_qeynos"
+              action: buy
+              itemId: "rusty_short_sword"
+              quantity: 1
+      responses:
+        "200":
+          description: Transaction result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  bought:
+                    type: integer
+                    description: Present on buy
+                  sold:
+                    type: integer
+                    description: Present on sell
+                  itemId:
+                    type: string
+                  totalCost:
+                    type: integer
+                    description: In copper (buy only)
+                  saleValue:
+                    type: integer
+                    description: In copper (sell only)
+                  currency:
+                    $ref: "#/components/schemas/Currency"
+        "400":
+          description: Insufficient funds, item not available, or not in inventory
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ─── Leaderboard ──────────────────────────────────────────────────────
+  /api/leaderboard:
+    get:
+      operationId: getLeaderboard
+      tags: [Leaderboard]
+      summary: Get ranked character leaderboard
+      description: |
+        Returns characters ranked by level and XP. Only characters with
+        on-chain ownership (ownerAddress set) are included.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+        - name: classId
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter by class
+      responses:
+        "200":
+          description: Ranked leaderboard
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/LeaderboardEntry"
+              example:
+                - rank: 1
+                  id: "chr_abc123"
+                  name: "Kazrak"
+                  raceId: iksar
+                  classId: shadowknight
+                  level: 25
+                  xp: 12500
+                  currentZoneId: "zone_sebilis"
+                  ownerAddress: "0x1234..."
+                  portraitIpfs: "QmXyz..."
+                  templateId: "tmpl_shadowknight_iksar"
+
+  # ─── Faucet ───────────────────────────────────────────────────────────
+  /api/faucet:
+    post:
+      operationId: requestFaucet
+      tags: [Faucet]
+      summary: Request testnet ETH (Hardhat only)
+      description: |
+        Sends 1 ETH from the Hardhat default account to the specified address.
+        Only works when CHAIN_ID is 31337 (local Hardhat network).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [address]
+              properties:
+                address:
+                  type: string
+                  pattern: "^0x[a-fA-F0-9]{40}$"
+            example:
+              address: "0x1234567890abcdef1234567890abcdef12345678"
+      responses:
+        "200":
+          description: ETH sent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  hash:
+                    type: string
+                    description: Transaction hash
+              example:
+                ok: true
+                hash: "0xabc123..."
+        "400":
+          description: Invalid address or not on Hardhat network
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Components
+# ═══════════════════════════════════════════════════════════════════════════
+components:
+  schemas:
+    # ─── Enums ─────────────────────────────────────────────────────────
+    RaceId:
+      type: string
+      enum:
+        - human
+        - barbarian
+        - erudite
+        - wood_elf
+        - high_elf
+        - dark_elf
+        - half_elf
+        - dwarf
+        - troll
+        - ogre
+        - halfling
+        - gnome
+        - iksar
+
+    ClassId:
+      type: string
+      enum:
+        - warrior
+        - cleric
+        - paladin
+        - ranger
+        - shadowknight
+        - druid
+        - monk
+        - bard
+        - rogue
+        - shaman
+        - necromancer
+        - wizard
+        - magician
+        - enchanter
+
+    ClassArchetype:
+      type: string
+      enum: [melee, hybrid, priest, caster]
+
+    ActionType:
+      type: string
+      enum: [attack, spell, defend]
+
+    BattleStatus:
+      type: string
+      enum: [active, won, lost]
+
+    PvPStatus:
+      type: string
+      enum: [waiting, active, completed]
+
+    PvPResult:
+      type: ["string", "null"]
+      enum: [player1, player2, draw, null]
+
+    BattleDifficulty:
+      type: string
+      enum: [easy, medium, hard]
+      default: medium
+
+    QuestStatus:
+      type: string
+      enum: [available, active, completed, failed]
+
+    ObjectiveType:
+      type: string
+      enum: [kill, collect, deliver, explore, talk, escort]
+
+    ItemType:
+      type: string
+      enum: [weapon, armor, jewelry, spell, food, drink, container, key, misc]
+
+    WeaponType:
+      type: string
+      enum:
+        - 1h_slashing
+        - 2h_slashing
+        - 1h_blunt
+        - 2h_blunt
+        - piercing
+        - archery
+        - throwing
+        - hand_to_hand
+
+    ArmorSlot:
+      type: string
+      enum:
+        - head
+        - face
+        - ear
+        - neck
+        - chest
+        - arms
+        - wrist
+        - hands
+        - ring
+        - back
+        - waist
+        - legs
+        - feet
+        - primary
+        - secondary
+        - ammo
+        - range
+
+    DamageType:
+      type: string
+      enum: [melee, magic, fire, cold, poison, disease, piercing, slashing, blunt]
+
+    # ─── Base Objects ──────────────────────────────────────────────────
+    BaseStats:
+      type: object
+      required: [str, dex, sta, cha, wis, int, agi]
+      properties:
+        str:
+          type: integer
+        dex:
+          type: integer
+        sta:
+          type: integer
+        cha:
+          type: integer
+        wis:
+          type: integer
+        int:
+          type: integer
+        agi:
+          type: integer
+
+    CharacterStats:
+      allOf:
+        - $ref: "#/components/schemas/BaseStats"
+        - type: object
+          properties:
+            maxHp:
+              type: integer
+            maxMana:
+              type: integer
+            ac:
+              type: integer
+            atk:
+              type: integer
+            hpRegen:
+              type: number
+            manaRegen:
+              type: number
+            svFire:
+              type: integer
+            svCold:
+              type: integer
+            svPoison:
+              type: integer
+            svMagic:
+              type: integer
+            svDisease:
+              type: integer
+            weight:
+              type: number
+            maxWeight:
+              type: number
+
+    Equipment:
+      type: object
+      description: Equipment slots — each value is an item ID or null
+      properties:
+        primary:
+          type: string
+        secondary:
+          type: string
+        head:
+          type: string
+        chest:
+          type: string
+        legs:
+          type: string
+        feet:
+          type: string
+        hands:
+          type: string
+        arms:
+          type: string
+        back:
+          type: string
+        neck:
+          type: string
+        waist:
+          type: string
+        ring1:
+          type: string
+        ring2:
+          type: string
+        ear1:
+          type: string
+        ear2:
+          type: string
+        wrist1:
+          type: string
+        wrist2:
+          type: string
+        face:
+          type: string
+        ammo:
+          type: string
+
+    Currency:
+      type: object
+      required: [platinum, gold, silver, copper]
+      properties:
+        platinum:
+          type: integer
+        gold:
+          type: integer
+        silver:
+          type: integer
+        copper:
+          type: integer
+
+    ItemStats:
+      type: object
+      description: Stat bonuses from an item (all optional)
+      properties:
+        str:
+          type: integer
+        dex:
+          type: integer
+        sta:
+          type: integer
+        cha:
+          type: integer
+        wis:
+          type: integer
+        int:
+          type: integer
+        agi:
+          type: integer
+        hp:
+          type: integer
+        mana:
+          type: integer
+        ac:
+          type: integer
+        svFire:
+          type: integer
+        svCold:
+          type: integer
+        svPoison:
+          type: integer
+        svMagic:
+          type: integer
+        svDisease:
+          type: integer
+        atk:
+          type: integer
+        hpRegen:
+          type: number
+        manaRegen:
+          type: number
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+
+    # ─── Entities ──────────────────────────────────────────────────────
+    Character:
+      type: object
+      required: [id, userId, name, raceId, classId, level, xp, currentHp, maxHp]
+      properties:
+        id:
+          type: string
+        userId:
+          type: string
+        name:
+          type: string
+        raceId:
+          $ref: "#/components/schemas/RaceId"
+        classId:
+          $ref: "#/components/schemas/ClassId"
+        level:
+          type: integer
+        xp:
+          type: integer
+        xpToNextLevel:
+          type: integer
+        currentHp:
+          type: integer
+        maxHp:
+          type: integer
+        currentMana:
+          type: integer
+        maxMana:
+          type: integer
+        stats:
+          $ref: "#/components/schemas/CharacterStats"
+        baseStats:
+          $ref: "#/components/schemas/BaseStats"
+        equipment:
+          $ref: "#/components/schemas/Equipment"
+        inventory:
+          type: array
+          items:
+            type: string
+          description: Array of item IDs
+        currency:
+          $ref: "#/components/schemas/Currency"
+        currentZoneId:
+          type: string
+        bindZoneId:
+          type: string
+        lastPlayedAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        ownerAddress:
+          type: ["string", "null"]
+        heroTokenId:
+          type: ["integer", "null"]
+        avatarIpfs:
+          type: ["string", "null"]
+        portraitIpfs:
+          type: ["string", "null"]
+        heroLoreJson:
+          type: ["string", "null"]
+
+    OwnedCharacter:
+      type: object
+      description: Lighter character view for wallet-owned listings
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        raceId:
+          $ref: "#/components/schemas/RaceId"
+        classId:
+          $ref: "#/components/schemas/ClassId"
+        level:
+          type: integer
+        xp:
+          type: integer
+        currentZoneId:
+          type: string
+        heroTokenId:
+          type: ["integer", "null"]
+        ownerAddress:
+          type: string
+        portraitIpfs:
+          type: ["string", "null"]
+        avatarIpfs:
+          type: ["string", "null"]
+        lastPlayedAt:
+          type: string
+          format: date-time
+        templateId:
+          type: ["string", "null"]
+        heroLoreJson:
+          type: ["string", "null"]
+
+    PublicHero:
+      type: object
+      description: Hero template available for minting
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        raceId:
+          $ref: "#/components/schemas/RaceId"
+        classId:
+          $ref: "#/components/schemas/ClassId"
+        level:
+          type: integer
+        portraitIpfs:
+          type: ["string", "null"]
+        avatarIpfs:
+          type: ["string", "null"]
+        lore:
+          type: ["object", "null"]
+          properties:
+            epithet:
+              type: string
+            backstory:
+              type: string
+          additionalProperties: true
+        maxSupply:
+          type: integer
+        mintedCount:
+          type: integer
+        rarity:
+          type: string
+          description: Computed from maxSupply (common, uncommon, rare, epic, legendary)
+        available:
+          type: boolean
+        onChainTemplateId:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+
+    Item:
+      type: object
+      required: [id, name, type, weight, value]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        type:
+          $ref: "#/components/schemas/ItemType"
+        weight:
+          type: number
+        value:
+          type: integer
+          description: Value in copper
+        lore:
+          type: boolean
+          description: If true, only 1 allowed in inventory
+        noTrade:
+          type: boolean
+        noDrop:
+          type: boolean
+        classes:
+          type: array
+          items:
+            $ref: "#/components/schemas/ClassId"
+        races:
+          type: array
+          items:
+            $ref: "#/components/schemas/RaceId"
+        stats:
+          $ref: "#/components/schemas/ItemStats"
+        description:
+          type: string
+        weaponType:
+          $ref: "#/components/schemas/WeaponType"
+        damage:
+          type: integer
+          description: Weapon damage
+        delay:
+          type: integer
+          description: Weapon delay in tenths of seconds
+        damageType:
+          $ref: "#/components/schemas/DamageType"
+        slot:
+          $ref: "#/components/schemas/ArmorSlot"
+        acBonus:
+          type: integer
+          description: Armor AC bonus
+
+    ZoneConnection:
+      type: object
+      properties:
+        toZoneId:
+          type: string
+        toZoneName:
+          type: string
+        direction:
+          type: string
+        description:
+          type: string
+        requiresKey:
+          type: string
+
+    Zone:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        shortName:
+          type: string
+        description:
+          type: string
+        ambiance:
+          type: string
+        level:
+          type: object
+          properties:
+            min:
+              type: integer
+            max:
+              type: integer
+        connections:
+          type: array
+          items:
+            $ref: "#/components/schemas/ZoneConnection"
+        safeZone:
+          type: boolean
+        bindable:
+          type: boolean
+        continent:
+          type: string
+          enum: [antonica, faydwer, odus, kunark, velious, luclin]
+
+    Quest:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        giver:
+          type: string
+          description: NPC ID or "world"
+        giverZoneId:
+          type: string
+        minLevel:
+          type: integer
+        maxLevel:
+          type: integer
+        objectives:
+          type: array
+          items:
+            $ref: "#/components/schemas/QuestObjective"
+        rewards:
+          $ref: "#/components/schemas/QuestReward"
+        lore:
+          type: string
+        prerequisiteQuestIds:
+          type: array
+          items:
+            type: string
+
+    QuestObjective:
+      type: object
+      properties:
+        id:
+          type: string
+        type:
+          $ref: "#/components/schemas/ObjectiveType"
+        description:
+          type: string
+        targetId:
+          type: string
+        targetCount:
+          type: integer
+        currentCount:
+          type: integer
+        completed:
+          type: boolean
+
+    QuestReward:
+      type: object
+      properties:
+        xp:
+          type: integer
+        gold:
+          type: integer
+        items:
+          type: array
+          items:
+            type: string
+
+    CharacterQuest:
+      type: object
+      properties:
+        questId:
+          type: string
+        status:
+          $ref: "#/components/schemas/QuestStatus"
+        objectives:
+          type: array
+          items:
+            $ref: "#/components/schemas/QuestObjective"
+        startedAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+
+    # ─── Battle (Card) Objects ─────────────────────────────────────────
+    Ability:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+          enum: [attack, spell, heal, buff, debuff]
+        manaCost:
+          type: integer
+        damage:
+          type: integer
+        healing:
+          type: integer
+        description:
+          type: string
+        targetType:
+          type: string
+          enum: [single_enemy, all_enemies, single_ally, all_allies, self]
+
+    CardUnit:
+      type: object
+      description: A player unit in card battle (hero or companion)
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        classId:
+          $ref: "#/components/schemas/ClassId"
+        raceId:
+          $ref: "#/components/schemas/RaceId"
+        level:
+          type: integer
+        xp:
+          type: integer
+        currentHp:
+          type: integer
+        maxHp:
+          type: integer
+        currentMana:
+          type: integer
+        maxMana:
+          type: integer
+        atk:
+          type: integer
+        ac:
+          type: integer
+        str:
+          type: integer
+        dex:
+          type: integer
+        agi:
+          type: integer
+        abilities:
+          type: array
+          items:
+            $ref: "#/components/schemas/Ability"
+        isHero:
+          type: boolean
+        portraitUrl:
+          type: ["string", "null"]
+
+    BattleMob:
+      type: object
+      description: An enemy unit in card battle
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        level:
+          type: integer
+        currentHp:
+          type: integer
+        maxHp:
+          type: integer
+        atk:
+          type: integer
+        ac:
+          type: integer
+        abilities:
+          type: array
+          items:
+            $ref: "#/components/schemas/Ability"
+        xpValue:
+          type: integer
+        portraitEmoji:
+          type: string
+        portraitUrl:
+          type: ["string", "null"]
+
+    BattleAction:
+      type: object
+      required: [actorId, type, targetId]
+      properties:
+        actorId:
+          type: string
+        type:
+          $ref: "#/components/schemas/ActionType"
+        targetId:
+          type: string
+        abilityId:
+          type: string
+
+    BattleLogEntry:
+      type: object
+      properties:
+        round:
+          type: integer
+        actorId:
+          type: string
+        actorName:
+          type: string
+        targetId:
+          type: string
+        targetName:
+          type: string
+        actionType:
+          $ref: "#/components/schemas/ActionType"
+        damage:
+          type: integer
+        healing:
+          type: integer
+        isCrit:
+          type: boolean
+        isMiss:
+          type: boolean
+        message:
+          type: string
+
+    BattleWave:
+      type: object
+      properties:
+        waveNumber:
+          type: integer
+        mobs:
+          type: array
+          items:
+            $ref: "#/components/schemas/BattleMob"
+        isBoss:
+          type: boolean
+
+    UnitReward:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        isHero:
+          type: boolean
+        classId:
+          type: string
+        survived:
+          type: boolean
+        xpGained:
+          type: integer
+        oldLevel:
+          type: integer
+        newLevel:
+          type: integer
+        leveledUp:
+          type: boolean
+
+    BattleRewards:
+      type: object
+      properties:
+        totalXp:
+          type: integer
+        xpPerUnit:
+          type: integer
+        unitRewards:
+          type: array
+          items:
+            $ref: "#/components/schemas/UnitReward"
+
+    BattleState:
+      type: object
+      properties:
+        sessionId:
+          type: string
+        characterId:
+          type: string
+        wave:
+          type: integer
+        waves:
+          type: array
+          items:
+            $ref: "#/components/schemas/BattleWave"
+        playerUnits:
+          type: array
+          items:
+            $ref: "#/components/schemas/CardUnit"
+        enemyUnits:
+          type: array
+          items:
+            $ref: "#/components/schemas/BattleMob"
+        turnOrder:
+          type: array
+          items:
+            type: string
+        currentTurn:
+          type: string
+          description: ID of the unit whose turn it is
+        log:
+          type: array
+          items:
+            $ref: "#/components/schemas/BattleLogEntry"
+        status:
+          $ref: "#/components/schemas/BattleStatus"
+        round:
+          type: integer
+        xpAwarded:
+          type: integer
+        defendingIds:
+          type: array
+          items:
+            type: string
+        tauntTargets:
+          type: object
+          additionalProperties:
+            type: string
+          description: "enemyId → playerUnitId forcing attack on taunter"
+        slowedIds:
+          type: array
+          items:
+            type: string
+        mesmerizedIds:
+          type: array
+          items:
+            type: string
+        rewards:
+          $ref: "#/components/schemas/BattleRewards"
+
+    # ─── PvP Objects ───────────────────────────────────────────────────
+    PvPBattleState:
+      type: object
+      properties:
+        matchId:
+          type: string
+        player1Units:
+          type: array
+          items:
+            $ref: "#/components/schemas/CardUnit"
+        player2Units:
+          type: array
+          items:
+            $ref: "#/components/schemas/CardUnit"
+        turnOrder:
+          type: array
+          items:
+            type: string
+        currentTurn:
+          type: string
+        currentPlayerSide:
+          type: string
+          enum: [player1, player2]
+        log:
+          type: array
+          items:
+            $ref: "#/components/schemas/BattleLogEntry"
+        round:
+          type: integer
+        status:
+          $ref: "#/components/schemas/PvPStatus"
+        winner:
+          $ref: "#/components/schemas/PvPResult"
+        defendingIds:
+          type: array
+          items:
+            type: string
+        tauntTargets:
+          type: object
+          additionalProperties:
+            type: string
+        slowedIds:
+          type: array
+          items:
+            type: string
+        mesmerizedIds:
+          type: array
+          items:
+            type: string
+        player1CharacterId:
+          type: string
+        player2CharacterId:
+          type: string
+        lastActionAt:
+          type: string
+          format: date-time
+
+    PvPLobbyEntry:
+      type: object
+      properties:
+        matchId:
+          type: string
+        player1Name:
+          type: string
+        player1Class:
+          type: string
+        player1Level:
+          type: integer
+        partySize:
+          type: integer
+        partyClasses:
+          type: array
+          items:
+            type: string
+        createdAt:
+          type: string
+          format: date-time
+
+    # ─── Classic Combat Objects ────────────────────────────────────────
+    CombatParticipant:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        isPlayer:
+          type: boolean
+        currentHp:
+          type: integer
+        maxHp:
+          type: integer
+        currentMana:
+          type: integer
+        maxMana:
+          type: integer
+        level:
+          type: integer
+        ac:
+          type: integer
+        atk:
+          type: integer
+        str:
+          type: integer
+        dex:
+          type: integer
+        agi:
+          type: integer
+        mobTemplateId:
+          type: string
+        xpValue:
+          type: integer
+        lootTable:
+          type: array
+          items:
+            type: string
+
+    DamageEvent:
+      type: object
+      properties:
+        attackerId:
+          type: string
+        defenderId:
+          type: string
+        damage:
+          type: integer
+        damageType:
+          $ref: "#/components/schemas/DamageType"
+        isCrit:
+          type: boolean
+        isMiss:
+          type: boolean
+        isBlock:
+          type: boolean
+        isParry:
+          type: boolean
+        isDodge:
+          type: boolean
+        spellId:
+          type: string
+        message:
+          type: string
+
+    CombatRound:
+      type: object
+      properties:
+        roundNumber:
+          type: integer
+        timestamp:
+          type: integer
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/DamageEvent"
+        stateAfter:
+          type: object
+          properties:
+            participants:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  currentHp:
+                    type: integer
+                  currentMana:
+                    type: integer
+        narrative:
+          type: string
+
+    CombatState:
+      type: object
+      properties:
+        sessionId:
+          type: string
+        characterId:
+          type: string
+        participants:
+          type: array
+          items:
+            $ref: "#/components/schemas/CombatParticipant"
+        round:
+          type: integer
+        isActive:
+          type: boolean
+        outcome:
+          type: string
+          enum: [victory, defeat, fled]
+        startedAt:
+          type: integer
+        rounds:
+          type: array
+          items:
+            $ref: "#/components/schemas/CombatRound"
+        totalXpAwarded:
+          type: integer
+
+    # ─── Response Wrappers ─────────────────────────────────────────────
+    GameStateResponse:
+      type: object
+      properties:
+        character:
+          $ref: "#/components/schemas/Character"
+        combatState:
+          oneOf:
+            - $ref: "#/components/schemas/CombatState"
+            - type: "null"
+        zone:
+          oneOf:
+            - $ref: "#/components/schemas/Zone"
+            - type: "null"
+
+    PartyResponse:
+      type: object
+      properties:
+        hero:
+          $ref: "#/components/schemas/Character"
+        companions:
+          type: array
+          minItems: 5
+          maxItems: 5
+          items:
+            oneOf:
+              - $ref: "#/components/schemas/Companion"
+              - type: "null"
+          description: "5 slots (index 0-4), null if empty"
+
+    Companion:
+      type: object
+      description: Party companion (NPC party member)
+      properties:
+        id:
+          type: string
+        heroCharacterId:
+          type: ["string", "null"]
+        ownerAddress:
+          type: string
+        slotIndex:
+          type: integer
+          description: "1-5 when assigned, 0 when benched"
+        name:
+          type: string
+        archetype:
+          type: string
+        backstoryJson:
+          type: string
+        raceId:
+          type: ["string", "null"]
+        classId:
+          type: ["string", "null"]
+        level:
+          type: integer
+        xp:
+          type: integer
+        avatarUrl:
+          type: ["string", "null"]
+        portraitUrl:
+          type: ["string", "null"]
+        soulboundTokenId:
+          type: ["integer", "null"]
+        createdAt:
+          type: string
+          format: date-time
+
+    LeaderboardEntry:
+      type: object
+      properties:
+        rank:
+          type: integer
+        id:
+          type: string
+        name:
+          type: string
+        raceId:
+          $ref: "#/components/schemas/RaceId"
+        classId:
+          $ref: "#/components/schemas/ClassId"
+        level:
+          type: integer
+        xp:
+          type: integer
+        currentZoneId:
+          type: string
+        ownerAddress:
+          type: string
+        portraitIpfs:
+          type: ["string", "null"]
+        templateId:
+          type: ["string", "null"]
+
+    Merchant:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        zoneId:
+          type: string
+        inventory:
+          type: array
+          items:
+            type: object
+            properties:
+              itemId:
+                type: string
+              quantity:
+                type: integer
+              priceCopper:
+                type: integer
+        buyMultiplier:
+          type: number
+        sellMultiplier:
+          type: number
