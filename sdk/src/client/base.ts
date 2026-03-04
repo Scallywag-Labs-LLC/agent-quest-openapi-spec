@@ -24,19 +24,20 @@ export class BaseFetcher {
     },
   ): Promise<T> {
     const res = await this.requestRaw(method, path, options)
-    if (!res.ok) {
-      let body: unknown
-      try {
-        body = await res.json()
-      } catch {
-        body = await res.text()
-      }
-      const msg = typeof body === 'object' && body !== null && 'error' in body
-        ? String((body as { error: string }).error)
-        : `HTTP ${res.status}`
-      throw new AgentQuestError(msg, res.status, body)
+    const text = await res.text()
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(text)
+    } catch {
+      parsed = text
     }
-    return res.json() as Promise<T>
+    if (!res.ok) {
+      const msg = typeof parsed === 'object' && parsed !== null && 'error' in parsed
+        ? String((parsed as { error: string }).error)
+        : `HTTP ${res.status}`
+      throw new AgentQuestError(msg, res.status, parsed)
+    }
+    return parsed as T
   }
 
   protected async requestRaw(
