@@ -374,6 +374,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Item or character not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   /api/characters/sync-owner:
     patch:
@@ -1552,7 +1558,10 @@ paths:
       operationId: getMerchants
       tags: [Items & Merchant]
       summary: List merchants or get merchant inventory
-      description: Get merchants in a zone or a specific merchant's inventory.
+      description: |
+        Get merchants in a zone or a specific merchant's inventory.
+        At least one of zoneId or merchantId must be provided.
+      x-agent-notes: You must pass either zoneId or merchantId — calling with no params returns 400.
       parameters:
         - name: zoneId
           in: query
@@ -1577,6 +1586,12 @@ paths:
                   - type: array
                     items:
                       $ref: "#/components/schemas/Merchant"
+        "400":
+          description: Missing zoneId or merchantId
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
     post:
       operationId: merchantTransaction
       tags: [Items & Merchant]
